@@ -269,7 +269,10 @@ void save_trajectory( const std::vector<VertexType> &vertices, const std::string
         return;
     }
 
-    file << "id,x,y,theta\n";
+    if constexpr ( std::is_same<VertexType, Vertex_SE2>::value )
+        file << "id,x,y,theta\n";
+    else if constexpr ( std::is_same<VertexType, Vertex_SE3>::value )
+        file << "id,x,y,z,qx,qy,qz,qw\n";
 
     for ( const auto &v : vertices ) {
         if constexpr (std::is_same<VertexType, Vertex_SE2>::value) {
