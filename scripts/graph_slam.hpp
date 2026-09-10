@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gtsam/geometry/Pose2.h"
+#include "gtsam/geometry/Pose3.h"
 #include "gtsam/linear/NoiseModel.h"
 #include "gtsam/slam/BetweenFactor.h"
 #include "gtsam/slam/PriorFactor.h"
@@ -18,28 +19,60 @@
 
 using namespace gtsam;
 
-void propogate_graph_onestep( NonlinearFactorGraph *graph, Data *data, int curr_index ) {
+Edge_SE2 get_edge( const Data2D *data, int index ) { return data->edges[index]; };
 
-    Edge_SE2 curr_edge = data->edges[curr_index]; // these are odometries and loopclosures
+Edge_SE3 get_edge( const Data3D *data, int index ) { return data->edges[index]; };
 
-    Pose2 odometry_mean( curr_edge.x, curr_edge.y, curr_edge.theta );
-    Eigen::Matrix3d cov_matrix = get_covariance_matrix( curr_edge.info );
+Pose2 get_pose( const Data2D *data, int index ) {
+    const auto &vertex = data->vertices[index];
+    return Pose2( vertex.x, vertex.y, vertex.theta );
+};
+
+Pose3 get_pose( const Data3D *data, int index ) {
+    const auto &vertex = data->vertices[index];
+    return Pose3( Rot3::Quaternion( vertex.qw, vertex.qx, vertex.qy, vertex.qz ),
+                  Point3( vertex.x, vertex.y, vertex.z ) );
+};
+
+template <typename DataType>
+void propogate_graph_onestep( NonlinearFactorGraph *graph, DataType *data, int curr_index ) {
+
+    const auto curr_edge = get_edge( data, curr_index );
+    const auto odometry_mean = get_pose( data, curr_index );
+
+    auto cov_matrix = get_covariance_matrix( curr_edge );
     noiseModel::Diagonal::shared_ptr odometry_noise = noiseModel::Diagonal::Sigmas( cov_matrix.diagonal().cwiseSqrt() );
 
-    graph->add( BetweenFactor<Pose2>( curr_edge.indeces[0], curr_edge.indeces[1], odometry_mean, odometry_noise ) );
+    if constexpr ( std::is_same<DataType, Data3D>::value )
+        graph->add( BetweenFactor<Pose3>( curr_edge.indeces[0], curr_edge.indeces[1], odometry_mean, odometry_noise ) );
+    else if constexpr ( std::is_same<DataType, Data2D>::value )
+        graph->add( BetweenFactor<Pose2>( curr_edge.indeces[0], curr_edge.indeces[1], odometry_mean, odometry_noise ) );
 };
 
-void add_prior_factor( NonlinearFactorGraph *graph ) {
-    Pose2 priorMean( 0, 0, 0 );
-    noiseModel::Diagonal::shared_ptr priorNoise = noiseModel::Diagonal::Sigmas( Vector3( 0.3, 0.3, 0.1 ) );
-    graph->add( PriorFactor<Pose2>( 0, priorMean, priorNoise ) );
+template <typename PoseType> void add_prior_factor( NonlinearFactorGraph *graph, PoseType priorMean ) {
+    noiseModel::Diagonal::shared_ptr priorNoise;
+
+    if ( std::is_same<PoseType, Pose2>::value ) {
+        priorNoise = noiseModel::Diagonal::Sigmas( Vector3( 0.3, 0.3, 0.1 ) );
+
+    } else if ( std::is_same<PoseType, Pose3>::value ) {
+        priorNoise = noiseModel::Diagonal::Sigmas( Vector6( 0.3, 0.3, 0.3, 0.1, 0.1, 0.1 ) );
+    }
+
+    graph->add( PriorFactor<PoseType>( 0, priorMean, priorNoise ) );
 };
 
-NonlinearFactorGraph construct_graph( Data *data ) {
+template <typename DataType> NonlinearFactorGraph construct_graph( DataType *data ) {
     NonlinearFactorGraph graph;
 
     // prior
-    add_prior_factor( &graph );
+    if constexpr ( std::is_same<DataType, Data2D>::value ) {
+        Pose2 priorMean = get_pose( data, 0 );
+        add_prior_factor( &graph, priorMean );
+    } else if constexpr ( std::is_same<DataType, Data3D>::value ) {
+        Pose3 priorMean = get_pose( data, 0 );
+        add_prior_factor( &graph, priorMean );
+    }
 
     // adding one step for each measurements/edges
     for ( int curr_index = 0; curr_index < data->edges.size(); curr_index++ ) {
@@ -51,44 +84,68 @@ NonlinearFactorGraph construct_graph( Data *data ) {
     return graph;
 };
 
-Values get_initial_guess( const Data *data ) {
+template <typename DataType> Values get_initial_guess( const DataType *data ) {
     Values initial;
     for ( const auto &vertex : data->vertices ) {
-        initial.insert( vertex.index, gtsam::Pose2( vertex.x, vertex.y, vertex.theta ) );
+        if constexpr ( std::is_same<DataType, Data2D>::value )
+            initial.insert( vertex.index, gtsam::Pose2( vertex.x, vertex.y, vertex.theta ) );
+        else if constexpr ( std::is_same<DataType, Data3D>::value ) {
+            initial.insert( vertex.index,
+                            gtsam::Pose3( gtsam::Rot3::Quaternion( vertex.qw, vertex.qx, vertex.qy, vertex.qz ),
+                                          gtsam::Point3( vertex.x, vertex.y, vertex.z ) ) );
+        }
     }
 
     return initial;
 };
 
-std::vector<Vertex_SE2> construct_optimized_traj( Values *result ) {
-    std::vector<Vertex_SE2> trajectory;
+template <typename DataType> auto construct_optimized_traj( Values *result ) {
+    decltype( DataType::vertices ) trajectory;
 
     for ( const auto &key_value : *result ) {
         Key key = key_value.key;
 
-        Pose2 pose = key_value.value.cast<Pose2>();
+        if constexpr ( std::is_same<DataType, Data3D>::value ) {
+            Pose3 pose = key_value.value.cast<Pose3>();
 
-        Vertex_SE2 vertex;
-        vertex.index = key;
-        vertex.x = pose.x();
-        vertex.y = pose.y();
-        vertex.theta = pose.theta();
+            Vertex_SE3 vertex;
+            vertex.index = key;
+            vertex.x = pose.x();
+            vertex.y = pose.y();
+            vertex.z = pose.z();
 
-        trajectory.push_back( vertex );
+            gtsam::Quaternion quat = pose.rotation().toQuaternion();
+            vertex.qw = quat.w();
+            vertex.qx = quat.x();
+            vertex.qy = quat.y();
+            vertex.qz = quat.z();
+
+            trajectory.push_back( vertex );
+        } else if constexpr ( std::is_same<DataType, Data2D>::value ) {
+
+            Pose2 pose = key_value.value.cast<Pose2>();
+
+            Vertex_SE2 vertex;
+            vertex.index = key;
+            vertex.x = pose.x();
+            vertex.y = pose.y();
+            vertex.theta = pose.theta();
+
+            trajectory.push_back( vertex );
+        }
     }
 
     return trajectory;
 }
 
-std::vector<Vertex_SE2> solve_slam( Data *data, bool use_incremental = false ) {
-
+template <typename DataType> auto solve_slam( DataType *data, bool use_incremental = false ) {
     if ( !use_incremental ) {
 
         NonlinearFactorGraph graph = construct_graph( data );
         Values initial = get_initial_guess( data );
 
         Values result = LevenbergMarquardtOptimizer( graph, initial ).optimize();
-        return construct_optimized_traj( &result );
+        return construct_optimized_traj<DataType>( &result );
 
     } else {
 
@@ -99,20 +156,29 @@ std::vector<Vertex_SE2> solve_slam( Data *data, bool use_incremental = false ) {
             NonlinearFactorGraph new_graph;
             Values new_initial;
 
-            Vertex_SE2 curr_vertex = data->vertices[i];
+            auto curr_vertex = data->vertices[i];
             Key vertex_key = curr_vertex.index;
 
             if ( i == 0 ) {
-                add_prior_factor( &new_graph );
+                if constexpr ( std::is_same<DataType, Data2D>::value ) {
+                    Pose2 priorMean = get_pose( data, 0 );
+                    add_prior_factor( &new_graph, priorMean );
+                } else if constexpr ( std::is_same<DataType, Data3D>::value ) {
+                    Pose3 priorMean = get_pose( data, 0 );
+                    add_prior_factor( &new_graph, priorMean );
+                }
             }
 
-            new_initial.insert( vertex_key, Pose2( curr_vertex.x, curr_vertex.y, curr_vertex.theta ) );
+            auto initial_pose = get_pose( data, i );
+
+            new_initial.insert( vertex_key, initial_pose );
 
             for ( int j = 0; j < data->edges.size(); j++ ) {
-                Edge_SE2 curr_edge = data->edges[j];
+                auto curr_edge = data->edges[j];
 
-                // This prevents double-adding factors and prevents referencing vertices that have not been added yet
-                if ( curr_edge.indeces[1] == vertex_key ) {
+                int u = curr_edge.indeces[0];
+                int v = curr_edge.indeces[1];
+                if ( std::max( u, v ) == vertex_key ) {
                     propogate_graph_onestep( &new_graph, data, j );
                 }
             }
@@ -121,6 +187,6 @@ std::vector<Vertex_SE2> solve_slam( Data *data, bool use_incremental = false ) {
             initial = isam.calculateEstimate();
         }
 
-        return construct_optimized_traj( &initial );
+        return construct_optimized_traj<DataType>( &initial );
     }
 };
