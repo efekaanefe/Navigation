@@ -1,50 +1,136 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-import numpy as np
 import os
 
-def visualize_trajectory(csv_file="trajectory.csv", save_path="trajectory_plot.png"):
-    if not os.path.exists(csv_file):
-        print(f"Error: {csv_file} not found!")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+RESULTS = "results"
+
+CASES_2D = [
+    ("2d_raw.csv", "2D Raw Measurements (odometry)"),
+    ("2d_batch.csv", "2D Batch (Levenberg-Marquardt)"),
+    ("2d_incremental.csv", "2D Incremental (iSAM2)"),
+]
+
+CASES_3D = [
+    ("3d_raw.csv", "3D Raw Measurements (odometry)"),
+    ("3d_batch.csv", "3D Batch (Levenberg-Marquardt)"),
+    ("3d_incremental.csv", "3D Incremental (iSAM2)"),
+]
+
+# parking-garage.g2o: x/y span ~270 m (ground plane), z spans ~12 m (garage levels),
+# so the bird's-eye view is x-y and z is elevation.
+BIRDVIEW = ("x", "y")
+ELEVATION = "z"
+
+
+def load(csv_file):
+    path = os.path.join(RESULTS, csv_file)
+    if not os.path.exists(path):
+        print(f"skipping {path} (not found)")
+        return None
+    return pd.read_csv(path)
+
+
+def draw_2d(ax, df, title):
+    ax.plot(df["x"], df["y"], color="tab:blue", lw=0.8, alpha=0.6, label="Path", zorder=1)
+
+    step = max(1, len(df) // 250)
+    sub = df.iloc[::step]
+    ax.quiver(sub["x"], sub["y"], np.cos(sub["theta"]), np.sin(sub["theta"]),
+              color="tab:red", angles="xy", scale=30, width=0.003,
+              label="Heading", zorder=2)
+
+    mark_endpoints(ax, df["x"].values, df["y"].values)
+    finish(ax, title, "X (m)", "Y (m)")
+
+
+def draw_3d_birdview(ax, df, title, zlim):
+    u, v = BIRDVIEW
+    ax.plot(df[u], df[v], color="0.6", lw=0.6, alpha=0.7, zorder=1)
+    sc = ax.scatter(df[u], df[v], c=df[ELEVATION], cmap="viridis",
+                    s=4, vmin=zlim[0], vmax=zlim[1], zorder=2)
+
+    mark_endpoints(ax, df[u].values, df[v].values)
+    finish(ax, title, f"{u.upper()} (m)", f"{v.upper()} (m)")
+    return sc
+
+
+def draw_3d_sideview(ax, df, title, zlim):
+    u = BIRDVIEW[0]
+    ax.plot(df[u], df[ELEVATION], color="tab:blue", lw=0.7, alpha=0.7)
+    mark_endpoints(ax, df[u].values, df[ELEVATION].values)
+    ax.set_ylim(zlim[0] - 1, zlim[1] + 1)
+    finish(ax, title, f"{u.upper()} (m)", f"{ELEVATION.upper()} (m)", equal=False)
+
+
+def mark_endpoints(ax, xs, ys):
+    ax.scatter(xs[0], ys[0], color="tab:green", marker="o", s=70,
+               label="Start", zorder=5, edgecolors="k", linewidths=0.5)
+    ax.scatter(xs[-1], ys[-1], color="purple", marker="X", s=70,
+               label="End", zorder=5, edgecolors="k", linewidths=0.5)
+
+
+def finish(ax, title, xlabel, ylabel, equal=True):
+    ax.set_title(title, fontsize=10)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    if equal:
+        ax.axis("equal")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend(fontsize=7, loc="best")
+
+
+def save(fig, name):
+    path = os.path.join(RESULTS, name)
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"saved {path}")
+
+
+def visualize_2d():
+    frames = [(load(f), t) for f, t in CASES_2D]
+    frames = [(d, t) for d, t in frames if d is not None]
+    if not frames:
         return
 
-    # Load the data
-    df = pd.read_csv(csv_file)
+    for df, title in frames:
+        fig, ax = plt.subplots(figsize=(9, 8))
+        draw_2d(ax, df, title)
+        save(fig, title.split("(")[0].strip().lower().replace(" ", "_") + ".png")
 
-    # Set up the plot
-    plt.figure(figsize=(10, 8))
+    fig, axes = plt.subplots(1, len(frames), figsize=(7 * len(frames), 7))
+    for ax, (df, title) in zip(np.atleast_1d(axes), frames):
+        draw_2d(ax, df, title)
+    fig.suptitle("2D Pose Graph SLAM - Intel dataset", fontsize=13)
+    save(fig, "2d_comparison.png")
 
-    # 1. Plot the continuous path (a blue line connecting the x, y points)
-    plt.plot(df['x'], df['y'], color='blue', label='Path', alpha=0.5, linestyle='-')
 
-    # 2. Plot the orientations (arrows showing the theta)
-    u = np.cos(df['theta'])
-    v = np.sin(df['theta'])
+def visualize_3d():
+    frames = [(load(f), t) for f, t in CASES_3D]
+    frames = [(d, t) for d, t in frames if d is not None]
+    if not frames:
+        return
 
-    # Quiver plots vectors (arrows)
-    plt.quiver(df['x'], df['y'], u, v, color='red', angles='xy', scale_units='xy', scale=1.5, width=0.004, label='Heading (Theta)')
+    zs = np.concatenate([d[ELEVATION].values for d, _ in frames])
+    zlim = (float(zs.min()), float(zs.max()))
 
-    # 3. Mark the Start and End points for clarity
-    plt.scatter(df['x'].iloc[0], df['y'].iloc[0], color='green', marker='o', s=100, label='Start', zorder=5)
-    plt.scatter(df['x'].iloc[-1], df['y'].iloc[-1], color='purple', marker='X', s=100, label='End', zorder=5)
+    for df, title in frames:
+        fig, axes = plt.subplots(2, 1, figsize=(9, 11),
+                                 gridspec_kw={"height_ratios": [3, 1]})
+        sc = draw_3d_birdview(axes[0], df, title + " - bird's-eye (X-Y)", zlim)
+        fig.colorbar(sc, ax=axes[0], label="Z elevation (m)", shrink=0.8)
+        draw_3d_sideview(axes[1], df, "side view (X-Z)", zlim)
+        save(fig, title.split("(")[0].strip().lower().replace(" ", "_") + ".png")
 
-    # Formatting
-    plt.title("2D Optimized Robot Trajectory")
-    plt.xlabel("X (meters)")
-    plt.ylabel("Y (meters)")
-    plt.axis("equal") 
-    plt.grid(True, linestyle='--', alpha=0.6)
-    plt.legend()
-
-    # Save the plot BEFORE showing it
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    print(f"Plot successfully saved to {save_path}")
-
-    # Show the plot
-    plt.show()
+    fig, axes = plt.subplots(1, len(frames), figsize=(7 * len(frames), 7))
+    for ax, (df, title) in zip(np.atleast_1d(axes), frames):
+        sc = draw_3d_birdview(ax, df, title, zlim)
+    fig.colorbar(sc, ax=list(np.atleast_1d(axes)), label="Z elevation (m)", shrink=0.7)
+    fig.suptitle("3D Pose Graph SLAM - parking garage (bird's-eye X-Y)", fontsize=13)
+    save(fig, "3d_comparison.png")
 
 
 if __name__ == "__main__":
-    visualize_trajectory("results/initial_traj.csv", "results/initial_traj.png")
-    visualize_trajectory("results/optimized_traj.csv", "results/optimized_traj.png")
-    visualize_trajectory("results/optimized_traj_inc.csv", "results/optimized_traj_inc.png")
+    visualize_2d()
+    visualize_3d()

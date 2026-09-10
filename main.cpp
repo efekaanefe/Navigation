@@ -18,10 +18,10 @@ void run_q1_2D() {
     std::vector<Vertex_SE2> optimized_traj = solve_slam( &data );
     std::vector<Vertex_SE2> optimized_traj_inc = solve_slam( &data, true );
 
-    // Save GT and predicted trajectories as csv
-    save_trajectory( data.vertices, "../results/initial_traj.csv" );
-    save_trajectory( optimized_traj, "../results/optimized_traj.csv" );
-    save_trajectory( optimized_traj_inc, "../results/optimized_traj_inc.csv" );
+    // Save raw and predicted trajectories as csv
+    save_trajectory( data.vertices, "../results/2d_raw.csv" );
+    save_trajectory( optimized_traj, "../results/2d_batch.csv" );
+    save_trajectory( optimized_traj_inc, "../results/2d_incremental.csv" );
 }
 
 void run_q2_3D() {
@@ -32,14 +32,16 @@ void run_q2_3D() {
     data = read_data_3D( filepath );
     print_data( data, 3 );
 
+    // Max vertices: 1661 | Max edges: 6275
+
     // Slam algorithm
     std::vector<Vertex_SE3> optimized_traj = solve_slam( &data );
     std::vector<Vertex_SE3> optimized_traj_inc = solve_slam( &data, true );
 
-    // Save GT and predicted trajectories as csv
-    save_trajectory( data.vertices, "../results/initial_traj.csv" );
-    save_trajectory( optimized_traj, "../results/optimized_traj.csv" );
-    save_trajectory( optimized_traj_inc, "../results/optimized_traj_inc.csv" );
+    // Save raw and predicted trajectories as csv
+    save_trajectory( data.vertices, "../results/3d_raw.csv" );
+    save_trajectory( optimized_traj, "../results/3d_batch.csv" );
+    save_trajectory( optimized_traj_inc, "../results/3d_incremental.csv" );
 }
 
 int main() {
