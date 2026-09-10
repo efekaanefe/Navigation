@@ -34,11 +34,17 @@ Pose3 get_pose( const Data3D *data, int index ) {
                   Point3( vertex.x, vertex.y, vertex.z ) );
 };
 
+Pose2 get_measurement( const Edge_SE2 &edge ) { return Pose2( edge.x, edge.y, edge.theta ); };
+
+Pose3 get_measurement( const Edge_SE3 &edge ) {
+    return Pose3( Rot3::Quaternion( edge.qw, edge.qx, edge.qy, edge.qz ), Point3( edge.x, edge.y, edge.z ) );
+};
+
 template <typename DataType>
 void propogate_graph_onestep( NonlinearFactorGraph *graph, DataType *data, int curr_index ) {
 
     const auto curr_edge = get_edge( data, curr_index );
-    const auto odometry_mean = get_pose( data, curr_index );
+    const auto odometry_mean = get_measurement( curr_edge );
 
     auto cov_matrix = get_covariance_matrix( curr_edge );
     noiseModel::Diagonal::shared_ptr odometry_noise = noiseModel::Diagonal::Sigmas( cov_matrix.diagonal().cwiseSqrt() );
